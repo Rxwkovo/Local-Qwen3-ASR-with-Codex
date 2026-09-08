@@ -1,0 +1,7 @@
+interface:
+  display_name: "本地 Qwen3-ASR"
+  short_description: "在本机批量把音频或文件夹转写为 Markdown"
+  default_prompt: "使用 $local-qwen3-asr 把指定音频或文件夹本地转写为 Markdown。"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,16 @@
+# Never commit local environments, weights, caches, audio, or transcripts.
+env/
+models/
+cache/
+tmp/
+outputs/
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.aac
+*.ogg
+*.wma
+*.checkpoint.json
+__pycache__/
+*.pyc
