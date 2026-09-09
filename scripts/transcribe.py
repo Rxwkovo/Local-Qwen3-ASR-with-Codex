@@ -80,14 +80,25 @@ def format_listening_script(text: str) -> str:
     i = 0
     while i < len(sentences):
         best: tuple[float, int, int] | None = None
-        max_left = min(12, len(sentences) - i - 1)
+        # A long listening item can contain dozens of sentences before its
+        # second play. Keep the search bounded, but large enough to detect a
+        # full interview or monologue rather than only short dialogues.
+        max_left = min(60, len(sentences) - i - 1)
         for left_size in range(1, max_left + 1):
             left_text = " ".join(sentences[i : i + left_size])
             left_norm = normalized_for_comparison(left_text)
             if len(left_norm.split()) < 4:
                 continue
             right_start = i + left_size
-            max_right = min(12, len(sentences) - right_start)
+            anchor_score = SequenceMatcher(
+                None,
+                normalized_for_comparison(sentences[i]),
+                normalized_for_comparison(sentences[right_start]),
+                autojunk=False,
+            ).ratio()
+            if anchor_score < 0.55:
+                continue
+            max_right = min(60, len(sentences) - right_start)
             for right_size in range(max(1, left_size - 2), min(max_right, left_size + 2) + 1):
                 right_text = " ".join(sentences[right_start : right_start + right_size])
                 score = SequenceMatcher(
@@ -148,6 +159,68 @@ def merge_overlapping_text(existing: str, new_text: str, max_words: int = 30) ->
     return " ".join(left + right[overlap:]).strip()
 
 
+def remove_long_replays(text: str) -> str:
+    """Remove long, consecutive second plays inside one formatted exercise item."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?。！？])\s*", text) if s.strip()]
+    if len(sentences) < 6:
+        return text.strip()
+
+    output: list[str] = []
+    i = 0
+    while i < len(sentences):
+        best: tuple[float, int, int] | None = None
+        max_left = min(60, len(sentences) - i - 1)
+        for left_size in range(2, max_left + 1):
+            left_text = " ".join(sentences[i : i + left_size])
+            left_norm = normalized_for_comparison(left_text)
+            if len(left_norm.split()) < 18:
+                continue
+            right_start = i + left_size
+            anchor_score = SequenceMatcher(
+                None,
+                normalized_for_comparison(sentences[i]),
+                normalized_for_comparison(sentences[right_start]),
+                autojunk=False,
+            ).ratio()
+            if anchor_score < 0.55:
+                continue
+            max_right = min(60, len(sentences) - right_start)
+            for right_size in range(max(2, left_size - 2), min(max_right, left_size + 2) + 1):
+                right_text = " ".join(sentences[right_start : right_start + right_size])
+                score = SequenceMatcher(
+                    None, left_norm, normalized_for_comparison(right_text), autojunk=False
+                ).ratio()
+                if score >= 0.86 and (best is None or score > best[0]):
+                    best = (score, left_size, right_size)
+
+        if best is None:
+            output.append(sentences[i])
+            i += 1
+            continue
+
+        _, left_size, right_size = best
+        output.extend(sentences[i : i + left_size])
+        i += left_size + right_size
+
+    return " ".join(output).strip()
+
+
+def dedupe_formatted_record(record: str) -> str:
+    """Apply conservative long-replay removal without changing Text headings."""
+    pattern = re.compile(
+        r"(^### Text\s+\d+\s*\n\n)(.*?)(?=^### Text\s+\d+\s*$|\Z)",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not pattern.search(record):
+        return remove_long_replays(record)
+
+    def replace(match: re.Match[str]) -> str:
+        body = remove_long_replays(match.group(2).strip())
+        return f"{match.group(1)}{body}\n\n"
+
+    return pattern.sub(replace, record).strip()
+
+
 def transcribe_in_chunks(model, audio_path: Path, language: str | None, chunk_seconds: float) -> str:
     import librosa
 
@@ -203,7 +276,9 @@ def render_markdown(source: Path, audio_files: list[Path], records: dict[str, st
     ]
     for index, audio_path in enumerate(audio_files, start=1):
         title = audio_path.stem
-        transcript = records.get(str(audio_path.resolve()), "*[尚未转写]*")
+        transcript = dedupe_formatted_record(
+            records.get(str(audio_path.resolve()), "*[尚未转写]*")
+        )
         lines.extend([f"## {index:02d}. {title}", "", transcript, ""])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -227,6 +302,11 @@ def parse_args() -> argparse.Namespace:
         help="cuda 使用 NVIDIA 显卡；cpu 使用系统内存（默认：cuda）",
     )
     parser.add_argument("--overwrite", action="store_true", help="忽略断点并重新转写已有项目")
+    parser.add_argument(
+        "--render-only",
+        action="store_true",
+        help="只用现有检查点重新生成 Markdown，不加载模型",
+    )
     return parser.parse_args()
 
 
@@ -243,6 +323,11 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_path.with_suffix(".checkpoint.json")
     records = {} if args.overwrite else load_checkpoint(checkpoint_path)
+
+    if args.render_only:
+        output_path.write_text(render_markdown(source, audio_files, records), encoding="utf-8")
+        print(f"已从检查点重新生成：{output_path}", flush=True)
+        return 0
 
     model_root = DEPLOY_ROOT / "models" / f"Qwen3-ASR-{args.model}"
     if not model_root.exists():

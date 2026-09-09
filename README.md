@@ -71,6 +71,7 @@ C:\Users\你的用户名\.codex\skills\local-qwen3-asr
 - `--language auto`：语言未知或中英混合时自动识别；默认按英语处理。
 - `--device cpu`：使用系统内存和 CPU，不占 NVIDIA 显存，但速度会慢很多。
 - `--overwrite`：忽略原检查点并从头转写；请仅在确实需要重做时使用。
+- `--render-only`：不加载模型，只根据已有检查点重新生成并去重 Markdown。
 
 ## 为什么默认使用 0.6B
 
